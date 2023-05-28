@@ -1161,7 +1161,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.push(new ASTBinary(src, right, ASTBinary::BIN_IP_SUBTRACT));
             }
             break;
-         case Pyc::LOAD_ASSERTION_ERROR_A:
+         case Pyc::LOAD_ASSERTION_ERROR:
             {
                 PycRef<ASTNode> right = stack.top();
                 stack.pop();
