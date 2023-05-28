@@ -1161,6 +1161,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.push(new ASTBinary(src, right, ASTBinary::BIN_IP_SUBTRACT));
             }
             break;
+        case Pyc::WITH_EXCEPT_START_A:
         case Pyc::INPLACE_TRUE_DIVIDE:
             {
                 PycRef<ASTNode> right = stack.top();
