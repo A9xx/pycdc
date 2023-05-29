@@ -1,4 +1,5 @@
 #include <cstring>
+#include <cstdint>
 #include "ASTree.h"
 #include "FastStack.h"
 #include "pyc_numeric.h"
@@ -92,28 +93,21 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
     bool variable_annotations = false;
 
     while (!source.atEof()) {
-
-        curpos = pos;
-        bc_next(source, mod, opcode, operand, pos);
-
 #if defined(BLOCK_DEBUG) || defined(STACK_DEBUG)
-        // DEBUG Positon in source file
-        fprintf(stderr, "%-7d  %-3d %-16s_%-2d", pos, opcode, Pyc::OpcodeName(opcode & 0xFF), operand);
+        fprintf(stderr, "%-7d", pos);
     #ifdef STACK_DEBUG
         fprintf(stderr, "%-5d", (unsigned int)stack_hist.size() + 1);
     #endif
     #ifdef BLOCK_DEBUG
-        // DEBUG Indept
         for (unsigned int i = 0; i < blocks.size(); i++)
             fprintf(stderr, "    ");
-
-        // DEBUG Type String & Length
         fprintf(stderr, "%s (%d)", curblock->type_str(), curblock->end());
     #endif
         fprintf(stderr, "\n");
 #endif
 
-
+        curpos = pos;
+        bc_next(source, mod, opcode, operand, pos);
 
         if (need_try && opcode != Pyc::SETUP_EXCEPT_A) {
             need_try = false;
@@ -329,6 +323,16 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.push(new ASTList(values));
             }
             break;
+        case Pyc::BUILD_SET_A:
+            {
+                ASTSet::value_t values;
+                for (int i=0; i<operand; i++) {
+                    values.push_front(stack.top());
+                    stack.pop();
+                }
+                stack.push(new ASTSet(values));
+            }
+            break;
         case Pyc::BUILD_MAP_A:
             if (mod->verCompare(3, 5) >= 0) {
                 auto map = new ASTMap;
@@ -471,6 +475,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 stack.push(new ASTTuple(values));
             }
             break;
+        case Pyc::CALL_A:
         case Pyc::CALL_FUNCTION_A:
             {
                 int kwparams = (operand & 0xFF00) >> 8;
@@ -543,6 +548,9 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 }
                 PycRef<ASTNode> func = stack.top();
                 stack.pop();
+                if (opcode == Pyc::CALL_A && stack.top() == nullptr)
+                    stack.pop();
+
                 stack.push(new ASTCall(func, pparamList, kwparamList));
             }
             break;
@@ -711,7 +719,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 if (mod->verCompare(1, 3) < 0)
                     name = new ASTName(code->getName(operand));
                 else
-                    name = new ASTName(code->getVarName(operand));
+                    name = new ASTName(code->getLocal(operand));
 
                 if (name.cast<ASTName>()->name()->value()[0] == '_'
                         && name.cast<ASTName>()->name()->value()[1] == '[') {
@@ -1030,6 +1038,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
             }
             break;
         case Pyc::GET_ITER:
+        case Pyc::GET_YIELD_FROM_ITER:
             /* We just entirely ignore this */
             break;
         case Pyc::IMPORT_NAME_A:
@@ -1551,6 +1560,33 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 }
             }
             break;
+        case Pyc::SET_UPDATE_A:
+            {
+                PycRef<ASTNode> rhs = stack.top();
+                stack.pop();
+                PycRef<ASTSet> lhs = stack.top().cast<ASTSet>();
+                stack.pop();
+
+                if (rhs.type() != ASTNode::NODE_OBJECT) {
+                    fprintf(stderr, "Unsupported argument found for SET_UPDATE\n");
+                    break;
+                }
+
+                // I've only ever seen this be a TYPE_FROZENSET, but let's be careful...
+                PycRef<PycObject> obj = rhs.cast<ASTObject>()->object();
+                if (obj->type() != PycObject::TYPE_FROZENSET) {
+                    fprintf(stderr, "Unsupported argument type found for SET_UPDATE\n");
+                    break;
+                }
+
+                ASTSet::value_t result = lhs->values();
+                for (const auto& it : obj.cast<PycSet>()->values()) {
+                    result.push_back(new ASTObject(it));
+                }
+
+                stack.push(new ASTSet(result));
+            }
+            break;
         case Pyc::LIST_EXTEND_A:
             {
                 PycRef<ASTNode> rhs = stack.top();
@@ -1610,13 +1646,13 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
             }
             break;
         case Pyc::LOAD_DEREF_A:
-            stack.push(new ASTName(code->getCellVar(operand)));
+            stack.push(new ASTName(code->getCellVar(mod, operand)));
             break;
         case Pyc::LOAD_FAST_A:
             if (mod->verCompare(1, 3) < 0)
                 stack.push(new ASTName(code->getName(operand)));
             else
-                stack.push(new ASTName(code->getVarName(operand)));
+                stack.push(new ASTName(code->getLocal(operand)));
             break;
         case Pyc::LOAD_GLOBAL_A:
             stack.push(new ASTName(code->getName(operand)));
@@ -1639,6 +1675,24 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
             stack.push(new ASTName(code->getName(operand)));
             break;
         case Pyc::MAKE_CLOSURE_A:
+        case Pyc::WITH_EXCEPT_START:
+            {           
+                PycRef<PycString> msg = new PycString();
+                msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
+            }
+            break;
+        case Pyc::RERAISE:
+            {           
+                PycRef<PycString> msg = new PycString();
+                msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
+            }
+            break;
+        case Pyc::LOAD_ASSERTION_ERROR:
+            {           
+                PycRef<PycString> msg = new PycString();
+                msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
+            }
+            break;
         case Pyc::MAKE_FUNCTION_A:
             {
                 PycRef<ASTNode> fun_code = stack.top();
@@ -1766,110 +1820,8 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
             }
             break;
         case Pyc::POP_EXCEPT:
-            /* Do nothing. 
-            Pops a value from the stack, which is used to restore the exception state.
-
-            Changed in version 3.11: Exception representation on the stack now consist of one, not three, items.
-            */
+            /* Do nothing. */
             break;
-
-        case Pyc::WITH_EXCEPT_START:
-          /*
-          Calls the function in position 4 on the stack with arguments (type, val, tb) representing the exception at the top of the stack. Used to implement the call context_manager.__exit__(*exc_info()) when an exception has occurred in a with statement.
-          New in version 3.9.
-
-          The __exit__ function is in position 4 of the stack rather than 7. Exception representation on the stack now consist of one, not three, items.
-          Changed in version 3.11:
-          */
-        {
-            //curblock = ASTBlock::BLK_EXCEPT;
-          PycRef<PycString> msg = new PycString();
-          msg->setValue (
-               "# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n"
-             );
-            //fputs( msg->strValue, pyc_output);
-        case Pyc::POP_EXCEPT:
-          /* Do nothing.
-          Pops a value from the stack, which is used to restore the exception state.
-
-          Changed in version 3.11: Exception representation on the stack now consist of one, not three, items.
-          */
-          break;
-
-        case Pyc::WITH_EXCEPT_START:
-          /*
-          Calls the function in position 4 on the stack with arguments (type, val, tb) representing the exception at the top of the stack. Used to implement the call context_manager.__exit__(*exc_info()) when an exception has occurred in a with statement.
-          New in version 3.9.
-
-          The __exit__ function is in position 4 of the stack rather than 7. Exception representation on the stack now consist of one, not three, items.
-          Changed in version 3.11:
-          */
-        {
-          //curblock = ASTBlock::BLK_EXCEPT;
-          PycRef<PycString> msg = new PycString();
-          msg->setValue(
-            "# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n"
-          );
-          //fputs( msg->strValue, pyc_output);
-          OutputString(msg);
-          /*
-         // TODO: Get that message into the AST (Abtract Syntax Tree) to be shown at the right spot
-         //       However that f*** Types in CPP gimme a crisis
-         //
-         //       ... and again I know why I prefer Python when coding.
-
-                     PycRef<PycString> name = new ASTName( msg );
-                     curblock->append(
-                           name.cast<PycString>()
-                     );
-         */
-        }
-        break;
-
-        case Pyc::RERAISE:
-          // Re-raises the exception currently on top of the stack. 
-          // If oparg is non-zero, pops an additional value from the stack which is used to 
-          // set f_lasti of the current frame.
-          // New in version 3.9.
-          //  Changed in version 3.11: Exception representation on the stack now consist of one, not three, items.
-          //https://docs.python.org/3/library/dis.html#opcode-RERAISE
-
-        {
-          const char* msg = "# Decompile 'RERAISE' is not implemented yet.\n";
-          fputs(msg, pyc_output);
-        }
-        break;
-
-        case Pyc::POP_TOP:
-          OutputString( msg);
- /*
-// TODO: Get that message into the AST (Abtract Syntax Tree) to be shown at the right spot
-//       However that f*** Types in CPP gimme a crisis 
-//
-//       ... and again I know why I prefer Python when coding.
-
-            PycRef<PycString> name = new ASTName( msg );
-            curblock->append(
-                  name.cast<PycString>()
-            );
-*/
-        }
-        break;
-        
-        case Pyc::RERAISE:
-        // Re-raises the exception currently on top of the stack. 
-        // If oparg is non-zero, pops an additional value from the stack which is used to 
-        // set f_lasti of the current frame.
-        // New in version 3.9.
-        //  Changed in version 3.11: Exception representation on the stack now consist of one, not three, items.
-        //https://docs.python.org/3/library/dis.html#opcode-RERAISE
-
-        {
-          const char* msg = "# Decompile 'RERAISE' is not implemented yet.\n";
-          fputs(msg, pyc_output);
-        }
-        break;
-
         case Pyc::POP_TOP:
             {
                 PycRef<ASTNode> value = stack.top();
@@ -1908,7 +1860,6 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 PycRef<ASTPrint> printNode;
                 if (curblock->size() > 0 && curblock->nodes().back().type() == ASTNode::NODE_PRINT)
                     printNode = curblock->nodes().back().try_cast<ASTPrint>();
-
                 if (printNode && printNode->stream() == nullptr && !printNode->eol())
                     printNode->add(stack.top());
                 else
@@ -2089,7 +2040,6 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 }
             }
             break;
-
         case Pyc::SETUP_EXCEPT_A:
             {
                 if (curblock->blktype() == ASTBlock::BLK_CONTAINER) {
@@ -2208,7 +2158,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
         case Pyc::STORE_DEREF_A:
             {
                 if (unpack) {
-                    PycRef<ASTNode> name = new ASTName(code->getCellVar(operand));
+                    PycRef<ASTNode> name = new ASTName(code->getCellVar(mod, operand));
 
                     PycRef<ASTNode> tup = stack.top();
                     if (tup.type() == ASTNode::NODE_TUPLE)
@@ -2230,7 +2180,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 } else {
                     PycRef<ASTNode> value = stack.top();
                     stack.pop();
-                    PycRef<ASTNode> name = new ASTName(code->getCellVar(operand));
+                    PycRef<ASTNode> name = new ASTName(code->getCellVar(mod, operand));
 
                     if (value.type() == ASTNode::NODE_CHAINSTORE) {
                         append_to_chain_store(value, name, stack, curblock);
@@ -2248,7 +2198,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                     if (mod->verCompare(1, 3) < 0)
                         name = new ASTName(code->getName(operand));
                     else
-                        name = new ASTName(code->getVarName(operand));
+                        name = new ASTName(code->getLocal(operand));
 
                     PycRef<ASTNode> tup = stack.top();
                     if (tup.type() == ASTNode::NODE_TUPLE)
@@ -2281,7 +2231,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                     if (mod->verCompare(1, 3) < 0)
                         name = new ASTName(code->getName(operand));
                     else
-                        name = new ASTName(code->getVarName(operand));
+                        name = new ASTName(code->getLocal(operand));
 
                     if (name.cast<ASTName>()->name()->value()[0] == '_'
                             && name.cast<ASTName>()->name()->value()[1] == '[') {
@@ -2618,6 +2568,19 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
         case Pyc::SETUP_ANNOTATIONS:
             variable_annotations = true;
             break;
+        case Pyc::PRECALL_A:
+        case Pyc::RESUME_A:
+            /* We just entirely ignore this / no-op */
+            break;
+        case Pyc::CACHE:
+            /* These "fake" opcodes are used as placeholders for optimizing
+               certain opcodes in Python 3.11+.  Since we have no need for
+               that during disassembly/decompilation, we can just treat these
+               as no-ops. */
+            break;
+        case Pyc::PUSH_NULL:
+            stack.push(nullptr);
+            break;
         default:
             fprintf(stderr, "Unsupported opcode: %s\n", Pyc::OpcodeName(opcode & 0xFF));
             cleanBuild = false;
@@ -2937,6 +2900,24 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
             fputs("]", pyc_output);
         }
         break;
+    case ASTNode::NODE_SET:
+        {
+            fputs("{", pyc_output);
+            bool first = true;
+            cur_indent++;
+            for (const auto& val : node.cast<ASTSet>()->values()) {
+                if (first)
+                    fputs("\n", pyc_output);
+                else
+                    fputs(",\n", pyc_output);
+                start_line(cur_indent);
+                print_src(val, mod);
+                first = false;
+            }
+            cur_indent--;
+            fputs("}", pyc_output);
+        }
+        break;
     case ASTNode::NODE_COMPREHENSION:
         {
             PycRef<ASTComprehension> comp = node.cast<ASTComprehension>();
@@ -3196,7 +3177,7 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
             for (int i=0; i<code_src->argCount(); i++) {
                 if (narg)
                     fputs(", ", pyc_output);
-                fprintf(pyc_output, "%s", code_src->getVarName(narg++)->value());
+                fprintf(pyc_output, "%s", code_src->getLocal(narg++)->value());
                 if ((code_src->argCount() - i) <= (int)defargs.size()) {
                     fputs(" = ", pyc_output);
                     print_src(*da++, mod);
@@ -3207,7 +3188,7 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
                 fputs(narg == 0 ? "*" : ", *", pyc_output);
                 for (int i = 0; i < code_src->argCount(); i++) {
                     fputs(", ", pyc_output);
-                    fprintf(pyc_output, "%s", code_src->getVarName(narg++)->value());
+                    fprintf(pyc_output, "%s", code_src->getLocal(narg++)->value());
                     if ((code_src->kwOnlyArgCount() - i) <= (int)kwdefargs.size()) {
                         fputs(" = ", pyc_output);
                         print_src(*da++, mod);
@@ -3255,7 +3236,7 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
                 for (int i = 0; i < code_src->argCount(); ++i) {
                     if (narg)
                         fputs(", ", pyc_output);
-                    fprintf(pyc_output, "%s", code_src->getVarName(narg++)->value());
+                    fprintf(pyc_output, "%s", code_src->getLocal(narg++)->value());
                     if ((code_src->argCount() - i) <= (int)defargs.size()) {
                         fputs(" = ", pyc_output);
                         print_src(*da++, mod);
@@ -3266,7 +3247,7 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
                     fputs(narg == 0 ? "*" : ", *", pyc_output);
                     for (int i = 0; i < code_src->kwOnlyArgCount(); ++i) {
                         fputs(", ", pyc_output);
-                        fprintf(pyc_output, "%s", code_src->getVarName(narg++)->value());
+                        fprintf(pyc_output, "%s", code_src->getLocal(narg++)->value());
                         if ((code_src->kwOnlyArgCount() - i) <= (int)kwdefargs.size()) {
                             fputs(" = ", pyc_output);
                             print_src(*da++, mod);
@@ -3276,12 +3257,12 @@ void print_src(PycRef<ASTNode> node, PycModule* mod)
                 if (code_src->flags() & PycCode::CO_VARARGS) {
                     if (narg)
                         fputs(", ", pyc_output);
-                    fprintf(pyc_output, "*%s", code_src->getVarName(narg++)->value());
+                    fprintf(pyc_output, "*%s", code_src->getLocal(narg++)->value());
                 }
                 if (code_src->flags() & PycCode::CO_VARKEYWORDS) {
                     if (narg)
                         fputs(", ", pyc_output);
-                    fprintf(pyc_output, "**%s", code_src->getVarName(narg++)->value());
+                    fprintf(pyc_output, "**%s", code_src->getLocal(narg++)->value());
                 }
 
                 if (isLambda) {
