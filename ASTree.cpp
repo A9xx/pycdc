@@ -1693,6 +1693,12 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
             }
             break;
+        case Pyc::JUMP_IF_NOT_EXC_MATCH:
+            {           
+                PycRef<PycString> msg = new PycString();
+                msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
+            }
+            break;
         case Pyc::MAKE_FUNCTION_A:
             {
                 PycRef<ASTNode> fun_code = stack.top();
