@@ -1681,7 +1681,7 @@ PycRef<ASTNode> BuildFromCode(PycRef<PycCode> code, PycModule* mod)
                 msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
             }
             break;
-        case Pyc::RERAISE:
+        case Pyc::RERAISE_A:
             {           
                 PycRef<PycString> msg = new PycString();
                 msg->setValue("# Decompile 'WITH_EXCEPT_START' is not implemented yet.\n");
